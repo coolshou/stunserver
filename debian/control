@@ -1,0 +1,38 @@
+Source: stunserver
+Section: net
+Priority: optional
+Maintainer: Debian VoIP Team <pkg-voip-maintainers@lists.alioth.debian.org>
+Uploaders: Kilian Krause <kilian@debian.org>
+Build-Depends: debhelper (>= 9), libboost-dev, libssl1.0-dev | libssl-dev
+Standards-Version: 3.9.6
+Homepage: http://www.stunprotocol.org/
+Vcs-Svn: svn://anonscm.debian.org/pkg-voip/stunserver/trunk/
+Vcs-Browser: http://anonscm.debian.org/viewvc/pkg-voip/stunserver/trunk/
+
+Package: stuntman-server
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: stuntman-client, stun-client
+Provides: stun, stun-server
+Description: Server daemon for STUN
+ Open source implementation of the STUN protocol (Session Traversal Utilities
+ for NAT) as specified in RFCs 5389, 5769, and 5780. It also includes backwards
+ compatibility for RFC 3489. Source code distribution includes a high
+ performance STUN server, a client application, and a set of code libraries for
+ implementing a STUN client within an application
+ .
+ This package installs only the server part
+
+Package: stuntman-client
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Suggests: stun-server
+Provides: stun-client
+Description: Test client for STUN
+ Open source implementation of the STUN protocol (Session Traversal Utilities
+ for NAT) as specified in RFCs 5389, 5769, and 5780. It also includes backwards
+ compatibility for RFC 3489. Source code distribution includes a high
+ performance STUN server, a client application, and a set of code libraries for
+ implementing a STUN client within an application
+ .
+ This package installs only the client.

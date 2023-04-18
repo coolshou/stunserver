@@ -1,0 +1,18 @@
+stunserver (1.2.16-20230418) UNRELEASED; urgency=medium
+
+  * new upstream
+
+ -- coolshou <coolshou2060@gmail.com>  Tue, 18 Apr 2023 10:07:47 +0800
+
+stunserver (1.2.7-1.1) unstable; urgency=medium
+
+  * Non-maintainer upload.
+  * Fix FTBFS by using OpenSSL 1.0.2. (Closes: #828563)
+
+ -- Adrian Bunk <bunk@debian.org>  Fri, 13 Jan 2017 20:50:55 +0200
+
+stunserver (1.2.7-1) unstable; urgency=low
+
+  * Initial upload
+
+ -- Kilian Krause <kilian@debian.org>  Mon, 22 Dec 2014 01:10:19 +0100

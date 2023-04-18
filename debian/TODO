@@ -1,0 +1,2 @@
+- add own user account in postinst and throw away in postrm
+- fixup stuntman server invocation
