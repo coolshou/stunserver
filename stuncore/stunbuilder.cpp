@@ -34,7 +34,7 @@
 
 
 #include "stunauth.h"
-
+#include "computemd5.h"
 
 static int g_sequence_number = 0xaaaaaaaa;
 
@@ -173,17 +173,17 @@ HRESULT CStunMessageBuilder::AddAttribute(uint16_t attribType, const void* data,
     {
         size = 0;
     }
-    
+
     // attributes always start on a 4-byte boundary
     padding = (size % 4) ? (4 - (size % 4)) : 0;
-    
+
     if (_fLegacyMode)
     {
         // in legacy mode (RFC 3489), the header size of the attribute includes the padding
         // in RFC 5389, the attribute header is the exact size of the data, and extra padding bytes are implicitly assumed
         sizeheader += padding;
     }
-    
+
     // I suppose you can have zero length attributes as an indicator of something
     Chk(AddAttributeHeader(attribType, sizeheader));
 
@@ -208,10 +208,10 @@ HRESULT CStunMessageBuilder::AddStringAttribute(uint16_t attribType, const char*
     // I can't think of a single string attribute that could be legitimately empty
     // AddNonce, AddRealm, AddUserName below depend on this check.  So if this check gets removed, add it back to everywhere else
     ChkIfA(StringHelper::IsNullOrEmpty(pstr), E_INVALIDARG);
-    
+
     // AddAttribute allows empty attribute values, so if someone needs to add empty attribute values, do it with that call
     hr = AddAttribute(attribType, pstr, pstr?strlen(pstr):0);
-    
+
 Cleanup:
     return hr;
 }
@@ -230,7 +230,7 @@ HRESULT CStunMessageBuilder::AddErrorCode(uint16_t errorNumber, const char* pszR
     ChkIf(strsize >= 128, E_INVALIDARG);
     ChkIf(errorNumber < 300, E_INVALIDARG);
     ChkIf(errorNumber > 600, E_INVALIDARG);
-    
+
     padding = (size%4) ? (4-size%4) : 0;
 
     // fix for RFC 3489 clients - explicitly do the 4-byte padding alignment on the string with spaces instead of
@@ -239,7 +239,7 @@ HRESULT CStunMessageBuilder::AddErrorCode(uint16_t errorNumber, const char* pszR
     {
         padding = 4 - (size % 4);
     }
-    
+
     if (_fLegacyMode)
     {
         sizeheader += padding;
@@ -259,7 +259,7 @@ HRESULT CStunMessageBuilder::AddErrorCode(uint16_t errorNumber, const char* pszR
     {
         _stream.Write(pszReason, strsize);
     }
-    
+
     if (padding > 0)
     {
         Chk(_stream.Write(padBytes, padding));
@@ -275,33 +275,33 @@ HRESULT CStunMessageBuilder::AddUnknownAttributes(const uint16_t* arr, size_t co
     uint16_t size = count * sizeof(uint16_t);
     uint16_t unpaddedsize = size;
     bool fPad = false;
-    
+
     ChkIfA(arr == NULL, E_INVALIDARG);
     ChkIfA(count <= 0, E_INVALIDARG);
-    
+
     // fix for RFC 3489. Since legacy clients can't understand implicit padding rules
     // of rfc 5389, then we do what rfc 3489 suggests.  If there are an odd number of attributes
     // that would make the length of the attribute not a multiple of 4, then repeat one
     // attribute.
-    
+
     fPad = _fLegacyMode && (!!(count % 2));
-    
+
     if (fPad)
     {
         size += sizeof(uint16_t);
     }
-    
+
     Chk(AddAttributeHeader(STUN_ATTRIBUTE_UNKNOWNATTRIBUTES, size));
-    
+
     Chk(_stream.Write(arr, unpaddedsize));
-    
+
     if (fPad)
     {
         // repeat the last attribute in the array to get an even alignment of 4 bytes
         _stream.Write(&arr[count-1], sizeof(arr[0]));
     }
-    
-    
+
+
 Cleanup:
     return hr;
 }
@@ -324,7 +324,7 @@ HRESULT CStunMessageBuilder::AddMappedAddress(const CSocketAddress& addr)
 HRESULT CStunMessageBuilder::AddResponseOriginAddress(const CSocketAddress& addr)
 {
     uint16_t attribid = _fLegacyMode ? STUN_ATTRIBUTE_SOURCEADDRESS : STUN_ATTRIBUTE_RESPONSE_ORIGIN;
-    
+
     return AddMappedAddressImpl(attribid, addr);
 }
 
@@ -480,15 +480,15 @@ HRESULT CStunMessageBuilder::AddMessageIntegrityImpl(uint8_t* key, size_t keysiz
     uint8_t hmacvaluedummy[c_hmacsize] = {}; // zero-init
     unsigned int resultlength = c_hmacsize;
     uint8_t* pDstBuf = NULL;
-    
+
     CRefCountedBuffer spBuffer;
     void* pData = NULL;
     size_t length = 0;
     unsigned char* pHashResult = NULL;
     UNREFERENCED_VARIABLE(pHashResult);
-    
+
     ChkIfA(key==NULL || keysize <= 0, E_INVALIDARG);
-    
+
     // add in a "zero-init" HMAC value.  This adds 24 bytes to the length
     Chk(AddAttribute(STUN_ATTRIBUTE_MESSAGEINTEGRITY, hmacvaluedummy, ARRAYSIZE(hmacvaluedummy)));
 
@@ -501,11 +501,11 @@ HRESULT CStunMessageBuilder::AddMessageIntegrityImpl(uint8_t* key, size_t keysiz
 
     ASSERT(length > 24);
     length = length-24;
-    
-    
+
+
     // now do a little pointer math so that HMAC can write exactly to where the hash bytes will appear
     pDstBuf = ((uint8_t*)pData) + length + 4;
-    
+
 #ifndef __APPLE__
     pHashResult = HMAC(EVP_sha1(), key, keysize, (uint8_t*)pData, length, pDstBuf, &resultlength);
     ASSERT(resultlength == 20);
@@ -514,7 +514,7 @@ HRESULT CStunMessageBuilder::AddMessageIntegrityImpl(uint8_t* key, size_t keysiz
     CCHmac(kCCHmacAlgSHA1, key, keysize,(uint8_t*)pData, length, pDstBuf);
     UNREFERENCED_VARIABLE(resultlength);
 #endif
-    
+
 Cleanup:
     return hr;
 }
@@ -529,61 +529,62 @@ HRESULT CStunMessageBuilder::AddMessageIntegrityLongTerm(const char* pszUserName
     HRESULT hr = S_OK;
     const size_t MAX_KEY_SIZE = MAX_STUN_AUTH_STRING_SIZE*3 + 2;
     uint8_t key[MAX_KEY_SIZE + 1]; // long enough for 64-char strings and two semicolons and a null char for debugging
-    
+
     uint8_t hash[MD5_DIGEST_LENGTH] = {};
     uint8_t* pResult = NULL;
     uint8_t* pDst = key;
-    
+
     size_t lenUserName = pszUserName ? strlen(pszUserName) : 0;
     size_t lenRealm = pszRealm ? strlen(pszRealm) : 0;
     size_t lenPassword = pszPassword ? strlen(pszPassword) : 0;
     size_t lenTotal = lenUserName + lenRealm + lenPassword + 2; // +2 for the two colons
 
     UNREFERENCED_VARIABLE(pResult);
-    
+
     ChkIfA(lenTotal > MAX_KEY_SIZE, E_INVALIDARG); // if we ever hit this limit, just increase MAX_STUN_AUTH_STRING_SIZE
-    
+
     // too bad CDatastream really only works on refcounted buffers.  Otherwise, we wouldn't have to do all this messed up pointer math
-    
-    // We could create a refcounted buffer in this function, but that would mean a call to "new and delete", and we're trying to avoid memory allocations in 
+
+    // We could create a refcounted buffer in this function, but that would mean a call to "new and delete", and we're trying to avoid memory allocations in
     // critical code paths because they are a proven perf hit
-    
+
     // TODO - Fix CDataStream and CBuffer so that "ref counted buffers" are no longer needed
-    
+
     pDst = key;
-    
+
     memcpy(pDst, pszUserName, lenUserName);
     pDst += lenUserName;
-    
+
     *pDst = ':';
     pDst++;
-    
+
     memcpy(pDst, pszRealm, lenRealm);
     pDst += lenRealm;
-    
+
     *pDst = ':';
     pDst++;
 
     memcpy(pDst, pszPassword, lenPassword);
     pDst += lenPassword;
     *pDst ='\0'; // null terminate for debugging (this char doesn not get hashed
-    
+
     ASSERT(key+lenTotal == pDst);
 
 #ifndef __APPLE__
-    pResult = MD5(key, lenTotal, hash);
+    //pResult = MD5(key, lenTotal, hash);
+    pResult =  computeMD5(key, lenTotal, hash);
 #else
     pResult = CC_MD5(key, lenTotal, hash);
 #endif
-    
+
     ASSERT(pResult != NULL);
     hr= AddMessageIntegrityImpl(hash, MD5_DIGEST_LENGTH);
-    
+
 Cleanup:
     return hr;
 }
 
-        
+
 
 HRESULT CStunMessageBuilder::FixLengthField()
 {

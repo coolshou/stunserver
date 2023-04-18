@@ -34,7 +34,7 @@
 
 #include "stunauth.h"
 #include "fasthash.h"
-
+#include "computemd5.h"
 
 
 
@@ -50,11 +50,11 @@ void CStunMessageReader::Reset()
     _fMessageIsLegacyFormat = false;
     _state = HeaderNotRead;
     _mapAttributes.Reset();
-    
+
     _indexFingerprint = -1;
     _indexMessageIntegrity = -1;
     _countAttributes = 0;
-    
+
     memset(&_transactionid, '\0', sizeof(_transactionid));
     _msgTypeNormalized = 0xffff;
     _msgClass = StunMsgClassInvalidMessageClass;
@@ -112,7 +112,7 @@ bool CStunMessageReader::IsFingerprintAttributeValid()
     // If it's not, then the code below will return false
 
     ChkIf(pAttrib==NULL, E_FAIL);
-    
+
     ChkIfA(pAttrib->attributeType != STUN_ATTRIBUTE_FINGERPRINT, E_FAIL);
 
     ChkIf(pAttrib->size != 4, E_FAIL);
@@ -145,28 +145,30 @@ bool CStunMessageReader::HasMessageIntegrityAttribute()
 HRESULT CStunMessageReader::ValidateMessageIntegrity(uint8_t* key, size_t keylength)
 {
     HRESULT hr = S_OK;
-    
+
     int lastAttributeIndex = _countAttributes - 1;
     bool fFingerprintAdjustment = false;
     bool fNoOtherAttributesAfterIntegrity = false;
     const size_t c_hmacsize = 20;
     uint8_t hmaccomputed[c_hmacsize] = {}; // zero-init
-    unsigned int hmaclength = c_hmacsize;
+    //unsigned int hmaclength = c_hmacsize;
 #ifndef __APPLE__
-    HMAC_CTX* ctx = NULL;
+    //HMAC_CTX* ctx = NULL;
+    EVP_MD_CTX* ctx= NULL;
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     HMAC_CTX ctxData = {};
     ctx = &ctxData;
     HMAC_CTX_init(ctx);
 #else
-    ctx = HMAC_CTX_new();
+    //ctx = HMAC_CTX_new();
+    ctx = EVP_MD_CTX_new();
 #endif
 #else
     CCHmacContext* ctx = NULL;
     CCHmacContext ctxData = {};
     ctx = &ctxData;
-    
-    UNREFERENCED_VARIABLE(hmaclength);
+
+    //UNREFERENCED_VARIABLE(hmaclength);
 #endif
     uint32_t chunk32;
     uint16_t chunk16;
@@ -174,55 +176,57 @@ HRESULT CStunMessageReader::ValidateMessageIntegrity(uint8_t* key, size_t keylen
     CDataStream stream;
     CRefCountedBuffer spBuffer;
     StunAttribute* pAttribIntegrity=NULL;
-    
+
     int cmp = 0;
     bool fContextInit = false;
-    
-    
+
+
     ChkIf(_state != BodyValidated, E_FAIL);
-    
+
     ChkIf(_countAttributes == 0, E_FAIL); // if there's not attributes, there's definitely not a message integrity attribute
     ChkIf(_indexMessageIntegrity == -1, E_FAIL);
-    
+
     // can a key be empty?
     ChkIfA(key==NULL, E_INVALIDARG);
     ChkIfA(keylength==0, E_INVALIDARG);
-    
+
     pAttribIntegrity = _mapAttributes.Lookup(::STUN_ATTRIBUTE_MESSAGEINTEGRITY);
-    
+
     ChkIf(pAttribIntegrity == NULL, E_FAIL);
 
     ChkIf(pAttribIntegrity->size != c_hmacsize, E_FAIL);
-    
+
     // first, check to make sure that no other attributes (other than fingerprint) follow the message integrity
     fNoOtherAttributesAfterIntegrity = (_indexMessageIntegrity == lastAttributeIndex) || ((_indexMessageIntegrity == (lastAttributeIndex-1)) && (_indexFingerprint == lastAttributeIndex));
     ChkIf(fNoOtherAttributesAfterIntegrity==false, E_FAIL);
-    
+
     fFingerprintAdjustment = (_indexMessageIntegrity == (lastAttributeIndex-1));
 
     Chk(GetBuffer(&spBuffer));
     stream.Attach(spBuffer, false);
-    
+
     // Here comes the fun part.  If there is a fingerprint attribute, we have to adjust the length header in computing the hash
 #ifndef __APPLE__
 #if OPENSSL_VERSION_NUMBER < 0x10100000L // could be lower!
     HMAC_Init(ctx, key, keylength, EVP_sha1());
 #else
-    HMAC_Init_ex(ctx, key, keylength, EVP_sha1(), NULL);
+    //HMAC_Init_ex(ctx, key, keylength, EVP_sha1(), NULL);
+    EVP_DigestInit_ex(ctx, EVP_sha1(), NULL);
 #endif
 #else
     CCHmacInit(ctx, kCCHmacAlgSHA1, key, keylength);
 #endif
     fContextInit = true;
-    
+
     // message type
     Chk(stream.ReadUint16(&chunk16));
 #ifndef __APPLE__
-    HMAC_Update(ctx, (unsigned char*)&chunk16, sizeof(chunk16));
+    //HMAC_Update(ctx, (unsigned char*)&chunk16, sizeof(chunk16));
+    EVP_DigestUpdate(ctx,  (unsigned char*)&chunk16, sizeof(chunk16));
 #else
     CCHmacUpdate(ctx, &chunk16, sizeof(chunk16));
 #endif
-    
+
     // message length
     Chk(stream.ReadUint16(&chunk16));
     if (fFingerprintAdjustment)
@@ -232,22 +236,23 @@ HRESULT CStunMessageReader::ValidateMessageIntegrity(uint8_t* key, size_t keylen
         // and to do this, we have to fix the network byte ordering issue
         uint16_t lengthHeader = ntohs(chunk16);
         uint16_t adjustedlengthHeader = lengthHeader - 8;
-        
-        
+
+
         chunk16 = htons(adjustedlengthHeader);
     }
-    
+
 #ifndef __APPLE__
-    HMAC_Update(ctx, (unsigned char*)&chunk16, sizeof(chunk16));
+    //HMAC_Update(ctx, (unsigned char*)&chunk16, sizeof(chunk16));
+    EVP_DigestUpdate(ctx,  (unsigned char*)&chunk16, sizeof(chunk16));
 #else
     CCHmacUpdate(ctx, &chunk16, sizeof(chunk16));
 #endif
-    
+
     // now include everything up to the hash attribute itself.
     len = pAttribIntegrity->offset;
     len -= 4; // subtract the size of the attribute header
     len -= 4; // subtract the size of the message header (not including the transaction id)
-    
+
     // len should be the number of bytes from the start of the transaction ID up through to the start of the integrity attribute header
     // the stun message has to be a multiple of 4 bytes, so we can read in 32 bit chunks
     nChunks = len / 4;
@@ -256,24 +261,25 @@ HRESULT CStunMessageReader::ValidateMessageIntegrity(uint8_t* key, size_t keylen
     {
         Chk(stream.ReadUint32(&chunk32));
 #ifndef __APPLE__
-        HMAC_Update(ctx, (unsigned char*)&chunk32, sizeof(chunk32));
+        //HMAC_Update(ctx, (unsigned char*)&chunk32, sizeof(chunk32));
+        EVP_DigestUpdate(ctx,  (unsigned char*)&chunk32, sizeof(chunk32));
 #else
         CCHmacUpdate(ctx, &chunk32, sizeof(chunk32));
 #endif
     }
-    
+
 #ifndef __APPLE__
-    HMAC_Final(ctx, hmaccomputed, &hmaclength);
+    //HMAC_Final(ctx, hmaccomputed, &hmaclength);
 #else
     CCHmacFinal(ctx, hmaccomputed);
 #endif
-    
-    
+
+
     // now compare the bytes
     cmp = memcmp(hmaccomputed, spBuffer->GetData() + pAttribIntegrity->offset, c_hmacsize);
-    
+
     hr = (cmp == 0 ? S_OK : E_FAIL);
-    
+
 Cleanup:
     if (fContextInit)
     {
@@ -281,13 +287,14 @@ Cleanup:
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
         HMAC_CTX_cleanup(ctx);
 #else
-        HMAC_CTX_free(ctx);
+        //HMAC_CTX_free(ctx);
+        EVP_MD_CTX_free(ctx);
 #endif
 #else
         UNREFERENCED_VARIABLE(fContextInit);
 #endif
     }
-        
+
     return hr;
 }
 
@@ -304,20 +311,20 @@ HRESULT CStunMessageReader::ValidateMessageIntegrityLong(const char* pszUser, co
     uint8_t* pData = NULL;
     uint8_t* pDst = key;
     size_t totallength = 0;
-    
+
     size_t passwordlength = pszPassword ? strlen(pszPassword) : 0;
     size_t userLength = pszUser ? strlen(pszUser)  : 0;
     size_t realmLength = pszRealm ? strlen(pszRealm) : 0;
-    
+
     uint8_t hash[MD5_DIGEST_LENGTH] = {};
-    
+
     ChkIf(_state != BodyValidated, E_FAIL);
-   
+
     totallength = userLength + realmLength + passwordlength + 2; // +2 for two semi-colons
-    
+
     pData = GetStream().GetDataPointerUnsafe();
     ChkIfA(pData==NULL, E_FAIL);
-    
+
     if (userLength > 0)
     {
         memcpy(pDst, pszUser, userLength);
@@ -325,8 +332,8 @@ HRESULT CStunMessageReader::ValidateMessageIntegrityLong(const char* pszUser, co
     }
     *pDst = ':';
     pDst++;
-    
-    
+
+
     if (realmLength > 0)
     {
         memcpy(pDst, pszRealm, realmLength);
@@ -341,21 +348,22 @@ HRESULT CStunMessageReader::ValidateMessageIntegrityLong(const char* pszUser, co
         pDst += passwordlength;
     }
     *pDst = '0'; // null terminate for debugging (does not get hashed)
-    
+
     ASSERT(key+totallength == pDst);
-    
+
 #ifndef __APPLE__
-    ChkIfA(NULL == MD5(key, totallength, hash), E_FAIL);
+    //ChkIfA(NULL == MD5(key, totallength, hash), E_FAIL);
+    ChkIfA(NULL == computeMD5(key, totallength, hash), E_FAIL);
 #else
         CC_MD5(key, totallength, hash);
 #endif
-    
-    
-    
+
+
+
     Chk(ValidateMessageIntegrity(hash, ARRAYSIZE(hash)));
-    
+
 Cleanup:
-    return hr;    
+    return hr;
 }
 
 
@@ -363,12 +371,12 @@ Cleanup:
 HRESULT CStunMessageReader::GetAttributeByIndex(int index, StunAttribute* pAttribute)
 {
     StunAttribute* pFound = _mapAttributes.LookupValueByIndex((size_t)index);
-    
+
     if (pFound == NULL)
     {
         return E_FAIL;
     }
-    
+
     if (pAttribute)
     {
         *pAttribute = *pFound;
@@ -379,12 +387,12 @@ HRESULT CStunMessageReader::GetAttributeByIndex(int index, StunAttribute* pAttri
 HRESULT CStunMessageReader::GetAttributeByType(uint16_t attributeType, StunAttribute* pAttribute)
 {
     StunAttribute* pFound = _mapAttributes.Lookup(attributeType);
-        
+
     if (pFound == NULL)
     {
         return E_FAIL;
     }
-    
+
     if (pAttribute)
     {
         *pAttribute = *pFound;
@@ -409,7 +417,7 @@ HRESULT CStunMessageReader::GetResponsePort(uint16_t* pPort)
 
     pAttrib = _mapAttributes.Lookup(STUN_ATTRIBUTE_RESPONSE_PORT);
     ChkIf(pAttrib == NULL, E_FAIL);
-    
+
     ChkIf(pAttrib->size != STUN_ATTRIBUTE_RESPONSE_PORT_SIZE, E_UNEXPECTED);
 
     pData = _stream.GetDataPointerUnsafe();
@@ -429,7 +437,7 @@ HRESULT CStunMessageReader::GetChangeRequest(StunChangeRequestAttribute* pChange
     uint32_t value = 0;
 
     ChkIfA(pChangeRequest == NULL, E_INVALIDARG);
-    
+
     pAttrib = _mapAttributes.Lookup(STUN_ATTRIBUTE_CHANGEREQUEST);
     ChkIf(pAttrib == NULL, E_FAIL);
 
@@ -464,7 +472,7 @@ HRESULT CStunMessageReader::GetPaddingAttributeSize(uint16_t* pSizePadding)
     ChkIfA(pSizePadding == NULL, E_INVALIDARG);
 
     *pSizePadding = 0;
-    
+
     pAttrib = _mapAttributes.Lookup(STUN_ATTRIBUTE_PADDING);
 
     ChkIf(pAttrib == NULL, E_FAIL);
@@ -510,7 +518,7 @@ HRESULT CStunMessageReader::GetAddressHelper(uint16_t attribType, CSocketAddress
     uint8_t *pAddrStart = NULL;
 
     ChkIf(pAttrib == NULL, E_FAIL);
-    
+
     pAddrStart = _stream.GetDataPointerUnsafe() + pAttrib->offset;
     Chk(::GetMappedAddress(pAddrStart, pAttrib->size, pAddr));
 
@@ -530,15 +538,15 @@ Cleanup:
 HRESULT CStunMessageReader::GetOtherAddress(CSocketAddress* pAddr)
 {
     HRESULT hr = S_OK;
-    
+
     hr = GetAddressHelper(STUN_ATTRIBUTE_OTHER_ADDRESS, pAddr);
-    
+
     if (FAILED(hr))
     {
         // look for the legacy changed address attribute that a legacy (RFC 3489) server would send
         hr = GetAddressHelper(STUN_ATTRIBUTE_CHANGEDADDRESS, pAddr);
     }
-    
+
     return hr;
 }
 
@@ -547,13 +555,13 @@ HRESULT CStunMessageReader::GetXorMappedAddress(CSocketAddress* pAddr)
 {
     HRESULT hr = S_OK;
     hr = GetAddressHelper(STUN_ATTRIBUTE_XORMAPPEDADDRESS, pAddr);
-    
+
     if (FAILED(hr))
     {
         // this is the vovida compat address attribute
         hr = GetAddressHelper(STUN_ATTRIBUTE_XORMAPPEDADDRESS_OPTIONAL, pAddr);
     }
-    
+
     if (SUCCEEDED(hr))
     {
         pAddr->ApplyStunXorMap(_transactionid);
@@ -565,17 +573,17 @@ HRESULT CStunMessageReader::GetXorMappedAddress(CSocketAddress* pAddr)
 HRESULT CStunMessageReader::GetResponseOriginAddress(CSocketAddress* pAddr)
 {
     HRESULT hr = S_OK;
-    
+
     hr = GetAddressHelper(STUN_ATTRIBUTE_RESPONSE_ORIGIN, pAddr);
-    
+
     if (FAILED(hr))
     {
         // look for the legacy address attribute that a legacy (RFC 3489) server would send
         hr = GetAddressHelper(STUN_ATTRIBUTE_SOURCEADDRESS, pAddr);
     }
-    
+
     return hr;
-    
+
 }
 
 
@@ -583,16 +591,16 @@ HRESULT CStunMessageReader::GetStringAttributeByType(uint16_t attributeType, cha
 {
     HRESULT hr = S_OK;
     StunAttribute* pAttrib = _mapAttributes.Lookup(attributeType);
-    
+
     ChkIfA(pszValue == NULL, E_INVALIDARG);
     ChkIf(pAttrib == NULL, E_INVALIDARG);
-    
+
     // size needs to be 1 greater than attrib.size so we can properly copy over a null char at the end
     ChkIf(pAttrib->size >= size, E_INVALIDARG);
-    
+
     memcpy(pszValue, _stream.GetDataPointerUnsafe() + pAttrib->offset, pAttrib->size);
     pszValue[pAttrib->size] = '\0';
-    
+
 Cleanup:
     return hr;
 }
@@ -717,25 +725,25 @@ HRESULT CStunMessageReader::ReadBody()
             result = _mapAttributes.Insert(attributeType, attrib);
             hr = (result >= 0) ? S_OK : E_FAIL;
         }
-        
+
         if (SUCCEEDED(hr))
         {
-            
+
             if (attributeType == ::STUN_ATTRIBUTE_FINGERPRINT)
             {
                 _indexFingerprint = _countAttributes;
             }
-            
+
             if (attributeType == ::STUN_ATTRIBUTE_MESSAGEINTEGRITY)
             {
                 _indexMessageIntegrity = _countAttributes;
             }
-            
+
             _countAttributes++;
         }
-        
 
-        
+
+
         if (SUCCEEDED(hr))
         {
             hr = _stream.SeekRelative(attributeLength);
@@ -778,7 +786,7 @@ CStunMessageReader::ReaderParseState CStunMessageReader::AddBytes(const uint8_t*
     {
         return _state;
     }
-    
+
     // seek to the end of the stream
     _stream.SeekDirect(_stream.GetSize());
 
